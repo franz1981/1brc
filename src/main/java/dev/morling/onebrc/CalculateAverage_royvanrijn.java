@@ -258,19 +258,18 @@ public class CalculateAverage_royvanrijn {
         private static final int tableMask = (tableSize - 1);
 
         private final MeasurementRepository.Entry[] table = new MeasurementRepository.Entry[tableSize];
+        private final int[] hashTable = new int[tableSize];
 
         static final class Entry {
             private final long[] data;
             private final int length;
-            private final int hash;
             private final String city;
             private int min, max, count;
             private long sum;
 
-            Entry(long[] data, int length, int hash, String city) {
+            Entry(long[] data, int length, String city) {
                 this.data = data;
                 this.length = length;
-                this.hash = hash;
                 this.city = city;
                 this.min = 1000;
                 this.max = -1000;
@@ -294,7 +293,7 @@ public class CalculateAverage_royvanrijn {
             int index = hash & tableMask;
             MeasurementRepository.Entry tableEntry;
             while ((tableEntry = table[index]) != null
-                    && (tableEntry.hash != hash || tableEntry.length != length || !arrayEquals(tableEntry.data, data, dataLength))) { // search for the right spot
+                    && (hashTable[index] != hash || tableEntry.length != length || !arrayEquals(tableEntry.data, data, dataLength))) { // search for the right spot
                 index = (index + 1) & tableMask;
             }
 
@@ -314,8 +313,9 @@ public class CalculateAverage_royvanrijn {
             System.arraycopy(data, 0, dataCopy, 0, dataLength);
 
             // And add entry:
-            MeasurementRepository.Entry toAdd = new MeasurementRepository.Entry(dataCopy, length, hash, city);
+            MeasurementRepository.Entry toAdd = new MeasurementRepository.Entry(dataCopy, length, city);
             table[index] = toAdd;
+            hashTable[index] = hash;
 
             toAdd.updateWith(temperature);
         }

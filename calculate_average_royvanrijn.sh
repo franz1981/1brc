@@ -19,6 +19,6 @@ source "$HOME/.sdkman/bin/sdkman-init.sh"
 sdk use java 21.0.1-graal 1>&2
 
 #JAVA_OPTS="--enable-preview -XX:+UnlockDiagnosticVMOptions -XX:CompileCommand=print,dev.morling.onebrc.CalculateAverage_royvanrijn::arrayEquals"
-JAVA_OPTS="--enable-preview -XX:+UnlockDiagnosticVMOptions"
+JAVA_OPTS="--enable-preview -XX:+UnlockExperimentalVMOptions -XX:+TrustFinalNonStaticFields"
 # time jbang --enable-preview --javaagent=ap-loader@jvm-profiling-tools/ap-loader=start,event=cpu,file=profile.html -m dev.morling.onebrc.CalculateAverage_royvanrijn target/average-1.0.0-SNAPSHOT.jar
 time java $JAVA_OPTS --class-path target/average-1.0.0-SNAPSHOT.jar dev.morling.onebrc.CalculateAverage_royvanrijn
