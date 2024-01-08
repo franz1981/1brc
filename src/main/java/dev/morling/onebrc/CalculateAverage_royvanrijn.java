@@ -56,7 +56,7 @@ import sun.misc.Unsafe;
  */
 public class CalculateAverage_royvanrijn {
 
-    private static final String FILE = "./measurements.txt";
+    private static final String FILE = "/tmp/measurements.txt";
 
     private static final Unsafe UNSAFE = initUnsafe();
     private static final boolean isBigEndian = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
@@ -196,17 +196,16 @@ public class CalculateAverage_royvanrijn {
         int min, max, count;
         long sum;
 
+        public Measurement(int min, int max, int count, long sum) {
+            this.min = min;
+            this.max = max;
+            this.count = count;
+            this.sum = sum;
+        }
+
         public Measurement() {
             this.min = 1000;
             this.max = -1000;
-        }
-
-        public Measurement updateWith(int measurement) {
-            min = min(min, measurement);
-            max = max(max, measurement);
-            sum += measurement;
-            count++;
-            return this;
         }
 
         public Measurement updateWith(Measurement measurement) {
@@ -221,7 +220,7 @@ public class CalculateAverage_royvanrijn {
             return round(min) + "/" + round((1.0 * sum) / count) + "/" + round(max);
         }
 
-        private double round(double value) {
+        private static double round(double value) {
             return Math.round(value) / 10.0;
         }
     }
@@ -254,17 +253,38 @@ public class CalculateAverage_royvanrijn {
      *
      * So I've written an extremely simple linear probing hashmap that should work well enough.
      */
-    class MeasurementRepository {
-        private int tableSize = 1 << 20; // large enough for the contest.
-        private int tableMask = (tableSize - 1);
+    static class MeasurementRepository {
+        private static final int tableSize = 1 << 20; // large enough for the contest.
+        private static final int tableMask = (tableSize - 1);
 
-        private MeasurementRepository.Entry[] table = new MeasurementRepository.Entry[tableSize];
+        private final MeasurementRepository.Entry[] table = new MeasurementRepository.Entry[tableSize];
 
-        record Entry(long address, long[] data, int length, int hash, String city, Measurement measurement) {
+        static final class Entry {
+            private final long[] data;
+            private final int length;
+            private final int hash;
+            private final String city;
+            private int min, max, count;
+            private long sum;
 
-            @Override
-            public String toString() {
-                return city + "=" + measurement;
+            Entry(long[] data, int length, int hash, String city) {
+                this.data = data;
+                this.length = length;
+                this.hash = hash;
+                this.city = city;
+                this.min = 1000;
+                this.max = -1000;
+            }
+
+            public void updateWith(int measurement) {
+                min = min(min, measurement);
+                max = max(max, measurement);
+                sum += measurement;
+                count++;
+            }
+
+            public Measurement measurement() {
+                return new Measurement(min, max, count, sum);
             }
         }
 
@@ -279,13 +299,11 @@ public class CalculateAverage_royvanrijn {
             }
 
             if (tableEntry != null) {
-                tableEntry.measurement.updateWith(temperature);
+                tableEntry.updateWith(temperature);
                 return;
             }
 
             // --- This is a brand new entry, insert into the hashtable and do the extra calculations (once!) do slower calculations here.
-            Measurement measurement = new Measurement();
-
             byte[] bytes = new byte[length];
             for (int i = 0; i < length; i++) {
                 bytes[i] = UNSAFE.getByte(address + i);
@@ -296,10 +314,10 @@ public class CalculateAverage_royvanrijn {
             System.arraycopy(data, 0, dataCopy, 0, dataLength);
 
             // And add entry:
-            MeasurementRepository.Entry toAdd = new MeasurementRepository.Entry(address, dataCopy, length, hash, city, measurement);
+            MeasurementRepository.Entry toAdd = new MeasurementRepository.Entry(dataCopy, length, hash, city);
             table[index] = toAdd;
 
-            toAdd.measurement.updateWith(temperature);
+            toAdd.updateWith(temperature);
         }
 
         public Stream<MeasurementRepository.Entry> get() {
@@ -310,7 +328,7 @@ public class CalculateAverage_royvanrijn {
     /**
      * For case multiple hashes are equal (however unlikely) check the actual key (using longs)
      */
-    private boolean arrayEquals(final long[] a, final long[] b, final int length) {
+    private static boolean arrayEquals(final long[] a, final long[] b, final int length) {
         for (int i = 0; i < length; i++) {
             if (a[i] != b[i])
                 return false;
