@@ -57,7 +57,7 @@ import sun.misc.Unsafe;
  */
 public class CalculateAverage_royvanrijn {
 
-    private static final String FILE = "./measurements.txt";
+    private static final String FILE = "/tmp/measurements.txt";
 
     private static final Unsafe UNSAFE = initUnsafe();
     private static final boolean isBigEndian = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
@@ -89,16 +89,20 @@ public class CalculateAverage_royvanrijn {
                 .toList();
 
         // Sometimes simple is better:
-        final HashMap<String, MeasurementRepository.Entry> measurements = HashMap.newHashMap(1 << 10);
+        final HashMap<String, byte[]> measurements = HashMap.newHashMap(1 << 10);
         for (MeasurementRepository repository : repositories) {
-            for (MeasurementRepository.Entry entry : repository.table) {
-                if (entry != null)
-                    measurements.merge(entry.city, entry, MeasurementRepository.Entry::mergeWith);
+            for (int i = 0; i < repository.cities.length; i++) {
+                String city = repository.cities[i];
+                if (city != null) {
+                    measurements.merge(city, repository.table[i], MeasurementRepository.EntryFlyweigth::mergeWith);
+                }
             }
         }
 
         System.out.print("{" +
-                measurements.entrySet().stream().sorted(Map.Entry.comparingByKey()).map(Object::toString).collect(Collectors.joining(", ")));
+                measurements.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                        .map(entry -> entry.getKey() + '=' + MeasurementRepository.EntryFlyweigth.toMeasurementString(entry.getValue()))
+                        .collect(Collectors.joining(", ")));
         System.out.println("}");
     }
 
@@ -130,7 +134,7 @@ public class CalculateAverage_royvanrijn {
 
         MeasurementRepository repository = new MeasurementRepository();
         long ptr = fromAddress;
-        final long[] dataBuffer = new long[16];
+        final byte[] dataBuffer = new byte[16 * 8];
         while ((ptr = processName(dataBuffer, ptr, toAddress, repository)) < toAddress) {
             // empty loop
         }
@@ -143,7 +147,7 @@ public class CalculateAverage_royvanrijn {
     /**
      * Already looping the longs here, lets shoehorn in making a hash
      */
-    private long processName(final long[] data, final long start, final long limit, final MeasurementRepository measurementRepository) {
+    private long processName(final byte[] data, final long start, final long limit, final MeasurementRepository measurementRepository) {
         int hash = 1;
         long i;
         int dataPtr = 0;
@@ -158,11 +162,12 @@ public class CalculateAverage_royvanrijn {
             if (mask != 0) {
                 final long partialWord = word & ((mask >> 7) - 1);
                 hash = longHashStep(hash, partialWord);
-                data[dataPtr] = partialWord;
+                UNSAFE.putLong(data, Unsafe.ARRAY_BYTE_BASE_OFFSET + dataPtr * Long.BYTES, partialWord);
                 final int index = Long.numberOfTrailingZeros(mask) >> 3;
                 return processNumber(start, i + index, hash, data, measurementRepository);
             }
-            data[dataPtr++] = word;
+            UNSAFE.putLong(data, Unsafe.ARRAY_BYTE_BASE_OFFSET + dataPtr * Long.BYTES, word);
+            dataPtr++;
             hash = longHashStep(hash, word);
         }
         // Handle remaining bytes near the limit of the buffer:
@@ -172,7 +177,7 @@ public class CalculateAverage_royvanrijn {
             byte read;
             if ((read = UNSAFE.getByte(i)) == ';') {
                 hash = longHashStep(hash, partialWord);
-                data[dataPtr] = partialWord;
+                UNSAFE.putLong(data, Unsafe.ARRAY_BYTE_BASE_OFFSET + dataPtr * Long.BYTES, partialWord);
                 return processNumber(start, i, hash, data, measurementRepository);
             }
             partialWord = partialWord | ((long) read << len);
@@ -187,7 +192,7 @@ public class CalculateAverage_royvanrijn {
     /**
      * Awesome branchless parser by merykitty.
      */
-    private long processNumber(final long startAddress, final long delimiterAddress, final int hash, final long[] data,
+    private long processNumber(final long startAddress, final long delimiterAddress, final int hash, final byte[] data,
                                final MeasurementRepository measurementRepository) {
 
         long word = UNSAFE.getLong(delimiterAddress + 1);
@@ -240,42 +245,61 @@ public class CalculateAverage_royvanrijn {
         private static final int TABLE_SIZE = 1 << 18; // large enough for the contest.
         private static final int TABLE_MASK = (TABLE_SIZE - 1);
 
-        private final Entry[] table = new Entry[TABLE_SIZE];
-        /**
-         * Separated hashtable, keeps memory local, idea of from franz1981.
-         * And colocate measurements in Entry:
-         */
-        private final int[] hashTable = new int[TABLE_SIZE];
+        private final byte[][] table = new byte[TABLE_SIZE][];
+        private final String[] cities = new String[TABLE_SIZE];
 
-        static final class Entry {
-            private final long[] data;
-            private final String city;
-            private int min, max, count;
-            private long sum;
+        static final class EntryFlyweigth {
+            // binary layout is:
+            // 16 bytes byte[] header
+            // int hash;
+            // int min;
+            // int max;
+            // int count;
+            // long sum;
+            // byte[] data; // no need to align here, we can be exact
+            private static final int HASH_OFFSET = Unsafe.ARRAY_BYTE_BASE_OFFSET;
+            private static final int MIN_OFFSET = HASH_OFFSET + Integer.BYTES;
+            private static final int MAX_OFFSET = MIN_OFFSET + Integer.BYTES;
+            private static final int COUNT_OFFSET = MAX_OFFSET + Integer.BYTES;
+            private static final int SUM_OFFSET = COUNT_OFFSET + Integer.BYTES;
+            private static final int DATA_OFFSET = SUM_OFFSET + Long.BYTES;
+            private static final int DATA_INDEX = DATA_OFFSET - Unsafe.ARRAY_BYTE_BASE_OFFSET;
 
-            Entry(long[] data, String city) {
-                this.data = data;
-                this.city = city;
-                this.min = 1000;
-                this.max = -1000;
+            public static byte[] createEntry(byte[] data, int length, int hash) {
+                byte[] entry = new byte[DATA_INDEX + length];
+                UNSAFE.putInt(entry, HASH_OFFSET, hash);
+                UNSAFE.putInt(entry, MIN_OFFSET, 1000);
+                UNSAFE.putInt(entry, MAX_OFFSET, -1000);
+                UNSAFE.putInt(entry, COUNT_OFFSET, 0);
+                UNSAFE.putLong(entry, SUM_OFFSET, 0);
+                System.arraycopy(data, 0, entry, DATA_INDEX, length);
+                return entry;
             }
 
-            public void updateWith(int measurement) {
-                min = min(min, measurement);
-                max = max(max, measurement);
-                sum += measurement;
-                count++;
+            public static int hash(byte[] self) {
+                return UNSAFE.getInt(self, HASH_OFFSET);
             }
 
-            public Entry mergeWith(Entry entry) {
-                min = min(min, entry.min);
-                max = max(max, entry.max);
-                sum += entry.sum;
-                count += entry.count;
-                return this;
+            public static void updateWith(byte[] self, int measurement) {
+                UNSAFE.putInt(self, MIN_OFFSET, min(UNSAFE.getInt(self, MIN_OFFSET), measurement));
+                UNSAFE.putInt(self, MAX_OFFSET, max(UNSAFE.getInt(self, MAX_OFFSET), measurement));
+                UNSAFE.putInt(self, COUNT_OFFSET, UNSAFE.getInt(self, COUNT_OFFSET) + 1);
+                UNSAFE.putLong(self, SUM_OFFSET, UNSAFE.getLong(self, SUM_OFFSET) + measurement);
             }
 
-            public String toString() {
+            public static byte[] mergeWith(byte[] self, byte[] entry) {
+                UNSAFE.putInt(self, MIN_OFFSET, min(UNSAFE.getInt(self, MIN_OFFSET), UNSAFE.getInt(entry, MIN_OFFSET)));
+                UNSAFE.putInt(self, MAX_OFFSET, max(UNSAFE.getInt(self, MAX_OFFSET), UNSAFE.getInt(entry, MAX_OFFSET)));
+                UNSAFE.putInt(self, COUNT_OFFSET, UNSAFE.getInt(self, COUNT_OFFSET) + UNSAFE.getInt(entry, COUNT_OFFSET));
+                UNSAFE.putLong(self, SUM_OFFSET, UNSAFE.getLong(self, SUM_OFFSET) + UNSAFE.getLong(entry, SUM_OFFSET));
+                return self;
+            }
+
+            public static String toMeasurementString(byte[] self) {
+                int min = UNSAFE.getInt(self, MIN_OFFSET);
+                int max = UNSAFE.getInt(self, MAX_OFFSET);
+                int count = UNSAFE.getInt(self, COUNT_OFFSET);
+                long sum = UNSAFE.getLong(self, SUM_OFFSET);
                 return round(min) + "/" + round((1.0 * sum) / count) + "/" + round(max);
             }
 
@@ -284,53 +308,28 @@ public class CalculateAverage_royvanrijn {
             }
         }
 
-        public void update(final long address, final long[] data, final int length, final int hash, final int temperature) {
-
-            final int dataLength = (length >> 3) + 1;
+        public void update(final long address, final byte[] data, final int length, final int hash, final int temperature) {
 
             int index = hash & TABLE_MASK;
-            Entry tableEntry = null;
-
-            // Find the entry:
-            while (true) {
-                int hashTableEntry;
-                if ((hashTableEntry = hashTable[index]) == 0) {
-                    // Slot is empty
-                    break;
-                }
-                else if (hashTableEntry == hash) {
-                    tableEntry = table[index];
-                    // Match the entire long[] with all name-bytes:
-                    if (Arrays.mismatch(tableEntry.data, 0, dataLength, data, 0, dataLength) < 0) {
-                        // Found a matching entry
-                        break;
-                    }
-                }
-                // Move to the next index
+            byte[] tableEntry;
+            while ((tableEntry = table[index]) != null
+                    && (EntryFlyweigth.hash(tableEntry) != hash
+                            || Arrays.mismatch(tableEntry, EntryFlyweigth.DATA_INDEX, EntryFlyweigth.DATA_INDEX + length, data, 0, length) >= 0)) { // search for the right spot
                 index = (index + 1) & TABLE_MASK;
             }
 
             if (tableEntry == null) {
-                tableEntry = createNewEntry(address, data, length, hash, dataLength, index);
+                tableEntry = createNewEntry(address, data, length, hash, index);
             }
-
-            tableEntry.updateWith(temperature);
+            EntryFlyweigth.updateWith(tableEntry, temperature);
         }
 
-        private Entry createNewEntry(final long address, final long[] data, final int length, final int hash, final int dataLength, final int index) {
-
-            // --- This is a brand new entry, insert into the hashtable and do the extra calculations (once!) do slower calculations here.
-            final byte[] bytes = new byte[length];
-            UNSAFE.copyMemory(null, address, bytes, Unsafe.ARRAY_BYTE_BASE_OFFSET, length);
-            final String city = new String(bytes, StandardCharsets.UTF_8);
-
-            final long[] dataCopy = new long[dataLength];
-            System.arraycopy(data, 0, dataCopy, 0, dataLength);
-
+        private byte[] createNewEntry(final long address, final byte[] data, final int length, final int hash, final int index) {
             // Add the entry:
-            final Entry tableEntry = new Entry(dataCopy, city);
+            final byte[] tableEntry = EntryFlyweigth.createEntry(data, length, hash);
             table[index] = tableEntry;
-            hashTable[index] = hash;
+            final String city = new String(tableEntry, EntryFlyweigth.DATA_INDEX, length, StandardCharsets.UTF_8);
+            cities[index] = city;
             return tableEntry;
         }
     }
